@@ -35,12 +35,25 @@ import random
 import game
 import util
 
+
+
+DIRECTION_VEC = {
+            Directions.NORTH: (0,1),
+            Directions.SOUTH: (0,-1),
+            Directions.EAST: (1,0),
+            Directions.WEST: (-1,0)
+        }
+
+INTENDED_PROB = api.directionProb
+SLIP_PROB = (1-api.directionProb)/2
+
 class MDPAgent(Agent):
 
     # Constructor: this gets run when we first invoke pacman.py
     def __init__(self):
         print("Starting up MDPAgent!")
         name = "Pacman"
+
 
     # Gets run after an MDPAgent object is created and once there is
     # game state to access.
@@ -52,6 +65,15 @@ class MDPAgent(Agent):
         self.build_map(state)
         self.draw_map()
 
+        for key, outcomes in self.transition_table.items():
+            total = sum(prob for prob, _ in outcomes)
+            assert abs(total - 1) < 1e-9, (key, outcomes)
+        for key in [((2, 5), Directions.NORTH), ((2, 5), Directions.EAST),
+                    ((3, 3), Directions.WEST), ((3, 3), Directions.EAST),
+                    ((1, 1), Directions.SOUTH)]:
+            print(key, self.transition_table[key])  
+
+
     def build_map(self, state):
         self.walls = set(api.walls(state))
         self.corners = api.corners(state)
@@ -60,15 +82,21 @@ class MDPAgent(Agent):
 
         print(f"The map is of size: {self.width}, {self.height}")
 
-        open_cells = set()
+        self.open_cells = set()
 
         for x in range(self.width):
             for y in range(self.height):                
                 coord = (x,y)
                 if coord not in self.walls:
-                    open_cells.add(coord)
+                    self.open_cells.add(coord)
 
-        print(f"Open cells are: \n{open_cells}")
+        print(f"Open cells are: \n{self.open_cells}")
+
+        self.transition_table = {}
+        for cell in self.open_cells:
+            for action in DIRECTION_VEC:
+                self.transition_table[(cell, action)] = self.get_transition_probs(cell, action)
+
 
     def draw_map(self, values=None):
       # Print the grid with the top row first, because y=0 is the bottom of the maze.
@@ -82,6 +110,38 @@ class MDPAgent(Agent):
               else:
                   row += " "
           print(row)
+
+
+
+    def move(self, cell, direction):
+        
+        x, y = cell
+        dx, dy = DIRECTION_VEC[direction]
+        next_cell = (x + dx, y + dy)
+
+        if next_cell in self.walls:
+            return cell
+        
+        return next_cell
+
+    def get_transition_probs(self, cell, action):
+        
+        attempts = [
+            (action, INTENDED_PROB),
+            (Directions.LEFT[action], SLIP_PROB),
+            (Directions.RIGHT[action], SLIP_PROB),
+        ]
+
+        outcomes = {}
+        for direction, prob in attempts:
+            next_cell = self.move(cell, direction)
+            outcomes[next_cell] = outcomes.get(next_cell, 0) + prob
+
+        return [(prob, next_cell) for next_cell, prob in outcomes.items()]
+
+        
+
+
 
 
         
