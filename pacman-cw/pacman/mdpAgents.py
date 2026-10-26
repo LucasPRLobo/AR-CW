@@ -48,6 +48,42 @@ class MDPAgent(Agent):
         print("Running registerInitialState for MDPAgent!")
         print("I'm at:")
         print(api.whereAmI(state))
+
+        self.build_map(state)
+        self.draw_map()
+
+    def build_map(self, state):
+        self.walls = set(api.walls(state))
+        self.corners = api.corners(state)
+        max_x, max_y = self.corners[-1]
+        self.width, self.height = max_x + 1, max_y + 1
+
+        print(f"The map is of size: {self.width}, {self.height}")
+
+        open_cells = set()
+
+        for x in range(self.width):
+            for y in range(self.height):                
+                coord = (x,y)
+                if coord not in self.walls:
+                    open_cells.add(coord)
+
+        print(f"Open cells are: \n{open_cells}")
+
+    def draw_map(self, values=None):
+      # Print the grid with the top row first, because y=0 is the bottom of the maze.
+      for y in range(self.height - 1, -1, -1):
+          row = ""
+          for x in range(self.width):
+              if (x, y) in self.walls:
+                  row += "%"
+              elif values is not None:
+                  row += "%6.1f" % values[(x, y)]
+              else:
+                  row += " "
+          print(row)
+
+
         
     # This is what gets run in between multiple games
     def final(self, state):
@@ -59,5 +95,6 @@ class MDPAgent(Agent):
         legal = api.legalActions(state)
         if Directions.STOP in legal:
             legal.remove(Directions.STOP)
+        
         # Random choice between the legal options.
         return api.makeMove(random.choice(legal), legal)
