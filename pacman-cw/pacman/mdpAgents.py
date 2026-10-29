@@ -18,19 +18,24 @@
 # educational purposes provided that (1) you do not distribute or publish
 # solutions, (2) you retain this notice, and (3) you provide clear
 # attribution to UC Berkeley, including a link to http://ai.berkeley.edu.
-# 
+#
 # Attribution Information: The Pacman AI projects were developed at UC Berkeley.
 # The core projects and autograders were primarily created by John DeNero
 # (denero@cs.berkeley.edu) and Dan Klein (klein@cs.berkeley.edu).
 # Student side autograding was added by Brad Miller, Nick Hay, and
 # Pieter Abbeel (pabbeel@cs.berkeley.edu).
 
-# The agent here is was written by Simon Parsons, based on the code in
-# pacmanAgents.py
+# The original skeleton was written by Simon Parsons, based on the code in
+# pacmanAgents.py.
+#
+# MDPAgent was written by Lucas Lobo for the 6CCSARDM coursework: a Markov
+# Decision Process solved with value iteration on every move. All environment
+# information comes from api.py.
 
 from pacman import Directions
 from game import Agent
 import api
+import util
 
 # Unit step for each action. Own vectors (not game.Actions) to keep integer coordinates.
 DIRECTION_VEC = {
@@ -46,21 +51,28 @@ SLIP_PROB = (1 - api.directionProb) / 2
 
 # Rewards R(s). Food dominates the living cost so its pull survives discounting over distance.
 R_EMPTY = -0.04
-R_FOOD = 10
-R_CAPSULE = 10  # Same as food: capsules are not needed to win.
-# R_GHOST = -500
+R_FOOD = 5
+R_CAPSULE = 30  # Above food: a capsule makes ghosts harmless for a while.
+R_GHOST = -300
 
 # Value iteration parameters.
 MAX_ITER = 200   # Safety cap on sweeps per move.
 EPSILON = 0.001  # Converged when no utility changes by more than this.
-GAMMA = 0.9      # Discount factor.
+GAMMA = 0.85     # Discount factor.
+
+# Ghost model. Rewards, GAMMA and these values were tuned by random search on
+# seeds 100-109 and checked on unseen seeds 1000-1099.
+SCARED_MARGIN = 2   # A scared ghost counts as dangerous once its timer falls to this.
+DANGER_RADIUS = 2   # Maze steps around a ghost that get a penalty.
+DANGER_DECAY = 0.35  # Penalty at distance d is R_GHOST * DANGER_DECAY**d.
 
 DEBUG = False  # Print the map at the start of each game.
 
 
 class MDPAgent(Agent):
-    # State = Pacman's cell only. Food (and later ghosts) are folded into R,
-    # which is rebuilt every move before re-solving the MDP.
+    # State = Pacman's cell only. Food, capsules and ghosts are folded into R,
+    # which is rebuilt every move before re-solving the MDP. Dangerous ghost
+    # cells are terminal states.
 
     # Constructor: this gets run when we first invoke pacman.py
     def __init__(self):
@@ -94,6 +106,9 @@ class MDPAgent(Agent):
             for action in DIRECTION_VEC:
                 self.transition_table[(cell, action)] = self.get_transition_probs(cell, action)
 
+        # Open cells one step away from each cell, used in the BFS danger zone
+        self.neighbours = {cell: {self.move(cell, d) for d in DIRECTION_VEC} - {cell} for cell in self.open_cells}
+
     # Debug print of the grid, optionally with a value per cell.
     # The top row is printed first, because y=0 is the bottom of the maze.
     def draw_map(self, values=None):
@@ -118,6 +133,37 @@ class MDPAgent(Agent):
             return cell
         return next_cell
 
+    # Cells occupied by ghosts that can kill Pacman. A scared ghost counts as
+    # dangerous once its timer is within SCARED_MARGIN of running out.
+    # Ghosts can sit halfway between cells, so both cells they overlap are marked.
+    def find_ghosts(self, state):
+        dangerous_cells = set()
+        for (x, y), timer in api.ghostStatesWithTimes(state):
+            if timer > SCARED_MARGIN:
+                continue  # Safely scared: neutral, not in R.
+            dangerous_cells.add((int(x), int(y)))
+            dangerous_cells.add((int(x + 0.5), int(y + 0.5)))
+        return dangerous_cells
+
+    # Breadth-first search over open cells from start, up to radius steps.
+    # Returns {cell: maze distance}, so walls are respected (unlike Manhattan distance).
+    def bfs_danger_zones(self, start, radius):
+        distances = {start: 0}
+        queue = util.Queue()
+        queue.push(start)
+
+        while not queue.isEmpty():
+            cell = queue.pop()
+            if distances[cell] == radius:
+                continue
+
+            for n in self.neighbours[cell]:
+                if n not in distances:
+                    distances[n] = distances[cell] + 1
+                    queue.push(n)
+
+        return distances
+
     # P(s'|s,a) as [(prob, next_cell), ...]. Attempts that land on the same cell
     # (e.g. two slips into walls) have their probabilities summed.
     def get_transition_probs(self, cell, action):
@@ -134,12 +180,16 @@ class MDPAgent(Agent):
 
         return [(prob, next_cell) for next_cell, prob in outcomes.items()]
 
-    # R(s) for the current move: living cost everywhere, overlaid with food and capsules.
-    # Rebuilt every move because food and capsules disappear when eaten.
+    # R(s) for the current move: living cost everywhere, overlaid with food,
+    # capsules and dangerous ghosts, which are also returned as terminal states.
+    # Cells near a ghost get a penalty that shrinks with maze distance (reward
+    # shaping), so Pacman keeps clear of ghosts that are about to move.
+    # Rebuilt every move because food is eaten and ghosts move.
     def build_rewards(self, state):
         rewards = {}
         food_cells = set(api.food(state))
         capsule_cells = set(api.capsules(state))
+        terminal = self.find_ghosts(state)
 
         for cell in self.open_cells:
             rewards[cell] = R_EMPTY
@@ -147,8 +197,17 @@ class MDPAgent(Agent):
                 rewards[cell] = R_FOOD
             if cell in capsule_cells:
                 rewards[cell] = R_CAPSULE
+            if cell in terminal:
+                rewards[cell] = R_GHOST
 
-        return rewards
+        # Danger zone: keep the strongest penalty when zones from several ghosts overlap.
+        for ghost_cell in terminal:
+            for danger_cell, d in self.bfs_danger_zones(ghost_cell, DANGER_RADIUS).items():
+                if d == 0:
+                    continue  # The ghost cell itself already has R_GHOST.
+                rewards[danger_cell] = min(rewards[danger_cell], R_GHOST * DANGER_DECAY ** d)
+
+        return rewards, terminal
 
     # Expected utility of an action: sum over s' of P(s'|s,a) * U(s').
     def expected_utility(self, cell, action, U):
@@ -156,7 +215,7 @@ class MDPAgent(Agent):
 
     # Synchronous value iteration (each sweep reads only the previous sweep's U).
     # Warm-started from the last move's utilities, since R changes little between moves.
-    def value_iteration(self, rewards):
+    def value_iteration(self, rewards, terminal):
         U = {s: self.U.get(s, 0) for s in self.open_cells}
 
         for _ in range(MAX_ITER):
@@ -164,9 +223,13 @@ class MDPAgent(Agent):
             max_change = 0
 
             for s in self.open_cells:
-                # Bellman update: U(s) = R(s) + gamma * max_a sum_s' P(s'|s,a) U(s').
-                best = max(self.expected_utility(s, a, U) for a in DIRECTION_VEC)
-                U_new[s] = rewards[s] + GAMMA * best
+                if s in terminal:
+                    # Absorbing state (game over): no future, so U(s) = R(s).
+                    U_new[s] = rewards[s]
+                else:
+                    # Bellman update: U(s) = R(s) + gamma * max_a sum_s' P(s'|s,a) U(s').
+                    best = max(self.expected_utility(s, a, U) for a in DIRECTION_VEC)
+                    U_new[s] = rewards[s] + GAMMA * best
                 max_change = max(max_change, abs(U_new[s] - U[s]))
 
             U = U_new
@@ -196,8 +259,8 @@ class MDPAgent(Agent):
         if Directions.STOP in legal:
             legal.remove(Directions.STOP)
 
-        rewards = self.build_rewards(state)
-        U = self.value_iteration(rewards)
+        rewards, terminal = self.build_rewards(state)
+        U = self.value_iteration(rewards, terminal)
         best = self.best_action(api.whereAmI(state), U, legal)
 
         return api.makeMove(best, legal)
