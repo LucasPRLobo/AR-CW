@@ -27,11 +27,9 @@
 
 # The original skeleton was written by Simon Parsons, based on the code in
 # pacmanAgents.py.
-#
-# MDPAgent was written by Lucas Lobo for the 6CCSARDM coursework: a Markov
-# Decision Process solved with value iteration on every move. All environment
-# information comes from api.py.
 
+
+# MDPAgent for the 6CCSARDM coursework
 from pacman import Directions
 from game import Agent
 import api
